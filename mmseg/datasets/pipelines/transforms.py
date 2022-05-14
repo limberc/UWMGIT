@@ -575,7 +575,7 @@ class CLAHE(object):
 
     def __repr__(self):
         repr_str = self.__class__.__name__
-        repr_str += f'(clip_limit={self.clip_limit}, '\
+        repr_str += f'(clip_limit={self.clip_limit}, ' \
                     f'tile_grid_size={self.tile_grid_size})'
         return repr_str
 
@@ -805,7 +805,7 @@ class AdjustGamma(object):
         assert gamma > 0
         self.gamma = gamma
         inv_gamma = 1.0 / gamma
-        self.table = np.array([(i / 255.0)**inv_gamma * 255
+        self.table = np.array([(i / 255.0) ** inv_gamma * 255
                                for i in np.arange(256)]).astype('uint8')
 
     def __call__(self, results):
@@ -927,8 +927,8 @@ class PhotoMetricDistortion(object):
         if random.randint(2):
             img = mmcv.bgr2hsv(img)
             img[:, :,
-                0] = (img[:, :, 0].astype(int) +
-                      random.randint(-self.hue_delta, self.hue_delta)) % 180
+            0] = (img[:, :, 0].astype(int) +
+                  random.randint(-self.hue_delta, self.hue_delta)) % 180
             img = mmcv.hsv2bgr(img)
         return img
 
@@ -1257,7 +1257,7 @@ class RandomMosaic(object):
 
                 # crop and paste image
                 mosaic_seg[y1_p:y2_p, x1_p:x2_p] = gt_seg_i[y1_c:y2_c,
-                                                            x1_c:x2_c]
+                                                   x1_c:x2_c]
 
             results[key] = mosaic_seg
 
@@ -1289,7 +1289,7 @@ class RandomMosaic(object):
                              center_position_xy[0], \
                              center_position_xy[1]
             crop_coord = img_shape_wh[0] - (x2 - x1), img_shape_wh[1] - (
-                y2 - y1), img_shape_wh[0], img_shape_wh[1]
+                    y2 - y1), img_shape_wh[0], img_shape_wh[1]
 
         elif loc == 'top_right':
             # index1 to top right part of image
@@ -1332,4 +1332,142 @@ class RandomMosaic(object):
         repr_str += f'center_ratio_range={self.center_ratio_range}, '
         repr_str += f'pad_val={self.pad_val}, '
         repr_str += f'seg_pad_val={self.pad_val})'
+        return repr_str
+
+
+@PIPELINES.register_module()
+class Albu:
+    """Albumentation augmentation.
+    Adds custom transformations from Albumentations library.
+    Please, visit `https://albumentations.readthedocs.io`
+    to get more information.
+    An example of ``transforms`` is as followed:
+    .. code-block::
+        [
+            dict(
+                type='ShiftScaleRotate',
+                shift_limit=0.0625,
+                scale_limit=0.0,
+                rotate_limit=0,
+                interpolation=1,
+                p=0.5),
+            dict(
+                type='RandomBrightnessContrast',
+                brightness_limit=[0.1, 0.3],
+                contrast_limit=[0.1, 0.3],
+                p=0.2),
+            dict(type='ChannelShuffle', p=0.1),
+            dict(
+                type='OneOf',
+                transforms=[
+                    dict(type='Blur', blur_limit=3, p=1.0),
+                    dict(type='MedianBlur', blur_limit=3, p=1.0)
+                ],
+                p=0.1),
+        ]
+    Args:
+        transforms (list[dict]): A list of albu transformations
+        bbox_params (dict): Bbox_params for albumentation `Compose`
+        keymap (dict): Contains {'input key':'albumentation-style key'}
+        skip_img_without_anno (bool): Whether to skip the image if no ann left
+            after aug
+    """
+
+    def __init__(self,
+                 transforms,
+                 bbox_params=None,
+                 keymap=None,
+                 #  update_pad_shape=False,
+                 skip_img_without_anno=False):
+        if Compose is None:
+            raise RuntimeError('albumentations is not installed')
+
+        # Args will be modified later, copying it will be safer
+        transforms = copy.deepcopy(transforms)
+        # if bbox_params is not None:
+        #     bbox_params = copy.deepcopy(bbox_params)
+        # if keymap is not None:
+        #     keymap = copy.deepcopy(keymap)
+        self.transforms = transforms
+        # self.bbox_params = (
+        # self.albu_builder(bbox_params) if bbox_params else None)
+        self.aug = Compose([self.albu_builder(t) for t in self.transforms], )
+        #    bbox_params=self.bbox_params)
+
+        # if not keymap:
+        #     self.keymap_to_albu = {
+        #         'img': 'image',
+        #         'gt_masks': 'masks',
+        #         'gt_bboxes': 'bboxes'
+        #     }
+        # else:
+        #     self.keymap_to_albu = keymap
+        # self.keymap_back = {v: k for k, v in self.keymap_to_albu.items()}
+
+    def albu_builder(self, cfg):
+        """Import a module from albumentations.
+        It inherits some of :func:`build_from_cfg` logic.
+        Args:
+            cfg (dict): Config dict. It should at least contain the key "type".
+        Returns:
+            obj: The constructed object.
+        """
+
+        assert isinstance(cfg, dict) and 'type' in cfg
+        args = cfg.copy()
+
+        obj_type = args.pop('type')
+        if mmcv.is_str(obj_type):
+            if albumentations is None:
+                raise RuntimeError('albumentations is not installed')
+            obj_cls = getattr(albumentations, obj_type)
+        elif inspect.isclass(obj_type):
+            obj_cls = obj_type
+        else:
+            raise TypeError(
+                f'type must be a str or valid type, but got {type(obj_type)}')
+
+        if 'transforms' in args:
+            args['transforms'] = [
+                self.albu_builder(transform)
+                for transform in args['transforms']
+            ]
+
+        return obj_cls(**args)
+
+    @staticmethod
+    def mapper(d, keymap):
+        """Dictionary mapper. Renames keys according to keymap provided.
+        Args:
+            d (dict): old dict
+            keymap (dict): {'old_key':'new_key'}
+        Returns:
+            dict: new dict.
+        """
+
+        updated_dict = {}
+        for k, v in zip(d.keys(), d.values()):
+            new_k = keymap.get(k, k)
+            updated_dict[new_k] = d[k]
+        return updated_dict
+
+    def __call__(self, results):
+        # dict to albumentations format
+        res = deepcopy(results)
+        try:
+            seg_keys = results.get('seg_fields', [])
+            masks = []
+            for key in seg_keys:
+                masks.append(results[key])
+            augged = self.aug(image=results['img'], masks=masks)
+            results['img'] = augged['image']
+            for i, key in enumerate(seg_keys):
+                results[key] = augged['masks'][i]
+            return results
+        except:
+            traceback.print_exc()
+            return res
+
+    def __repr__(self):
+        repr_str = self.__class__.__name__ + f'(transforms={self.transforms})'
         return repr_str
