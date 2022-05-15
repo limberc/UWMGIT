@@ -6,6 +6,7 @@ import numpy as np
 from mmcv.utils import deprecated_api_warning, is_tuple_of
 from numpy import random
 from ..builder import PIPELINES
+from copy import deepcopy
 
 try:
     import albumentations
