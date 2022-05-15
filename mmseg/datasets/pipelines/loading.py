@@ -90,7 +90,6 @@ class LoadImageFromFile(object):
 @PIPELINES.register_module()
 class LoadAnnotations(object):
     """Load annotations for semantic segmentation.
-
     Args:
         reduce_zero_label (bool): Whether reduce all label value by 1.
             Usually used for datasets where 0 is background label.
@@ -105,18 +104,18 @@ class LoadAnnotations(object):
     def __init__(self,
                  reduce_zero_label=False,
                  file_client_args=dict(backend='disk'),
+                 binarize=False,
                  imdecode_backend='pillow'):
         self.reduce_zero_label = reduce_zero_label
         self.file_client_args = file_client_args.copy()
         self.file_client = None
         self.imdecode_backend = imdecode_backend
+        self.binarize = binarize
 
     def __call__(self, results):
         """Call function to load multiple types annotations.
-
         Args:
             results (dict): Result dict from :obj:`mmseg.CustomDataset`.
-
         Returns:
             dict: The dict contains loaded semantic segmentation annotations.
         """
@@ -135,12 +134,10 @@ class LoadAnnotations(object):
             backend=self.imdecode_backend).squeeze().astype(np.uint8)
         # modify if custom classes
         if results.get('label_map', None) is not None:
-            # Add deep copy to solve bug of repeatedly
-            # replace `gt_semantic_seg`, which is reported in
-            # https://github.com/open-mmlab/mmsegmentation/pull/1445/
-            gt_semantic_seg_copy = gt_semantic_seg.copy()
             for old_id, new_id in results['label_map'].items():
-                gt_semantic_seg[gt_semantic_seg_copy == old_id] = new_id
+                gt_semantic_seg[gt_semantic_seg == old_id] = new_id
+        if self.binarize:
+            gt_semantic_seg = (gt_semantic_seg != 0).astype(np.uint8)
         # reduce zero_label
         if self.reduce_zero_label:
             # avoid using underflow conversion
