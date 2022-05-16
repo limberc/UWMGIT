@@ -13,7 +13,6 @@ from .base import BaseSegmentor
 @SEGMENTORS.register_module()
 class EncoderDecoder(BaseSegmentor):
     """Encoder Decoder segmentors.
-
     EncoderDecoder typically consists of backbone, decode_head, auxiliary_head.
     Note that auxiliary_head is only used for deep supervision during training,
     which could be dumped during inference.
@@ -121,7 +120,6 @@ class EncoderDecoder(BaseSegmentor):
 
     def forward_train(self, img, img_metas, gt_semantic_seg):
         """Forward function for training.
-
         Args:
             img (Tensor): Input images.
             img_metas (list[dict]): List of image info dict where each dict
@@ -131,7 +129,6 @@ class EncoderDecoder(BaseSegmentor):
                 `mmseg/datasets/pipelines/formatting.py:Collect`.
             gt_semantic_seg (Tensor): Semantic segmentation masks
                 used if the architecture supports semantic segmentation task.
-
         Returns:
             dict[str, Tensor]: a dictionary of loss components
         """
@@ -154,7 +151,6 @@ class EncoderDecoder(BaseSegmentor):
     # TODO refactor
     def slide_inference(self, img, img_meta, rescale):
         """Inference by sliding-window with overlap.
-
         If h_crop > h_img or w_crop > w_img, the small patch will be used to
         decode without padding.
         """
@@ -207,6 +203,8 @@ class EncoderDecoder(BaseSegmentor):
                 size = img.shape[2:]
             else:
                 size = img_meta[0]['ori_shape'][:2]
+            if 'pad_shape' in img_meta[0] and img_meta[0]["pad_shape"] != img_meta[0]["img_shape"]:
+                seg_logit = seg_logit[..., :img_meta[0]["img_shape"][0], :img_meta[0]["img_shape"][1]]
             seg_logit = resize(
                 seg_logit,
                 size=size,
@@ -218,7 +216,6 @@ class EncoderDecoder(BaseSegmentor):
 
     def inference(self, img, img_meta, rescale):
         """Inference with slide/whole style.
-
         Args:
             img (Tensor): The input image of shape (N, 3, H, W).
             img_meta (dict): Image info dict where each dict has: 'img_shape',
@@ -227,7 +224,6 @@ class EncoderDecoder(BaseSegmentor):
                 For details on the values of these keys see
                 `mmseg/datasets/pipelines/formatting.py:Collect`.
             rescale (bool): Whether rescale back to original shape.
-
         Returns:
             Tensor: The output segmentation map.
         """
@@ -239,22 +235,37 @@ class EncoderDecoder(BaseSegmentor):
             seg_logit = self.slide_inference(img, img_meta, rescale)
         else:
             seg_logit = self.whole_inference(img, img_meta, rescale)
-        output = F.softmax(seg_logit, dim=1)
+        if not self.test_cfg.get("multi_label", False):
+            output = F.softmax(seg_logit, dim=1)
+        else:
+            output = F.sigmoid(seg_logit)
         flip = img_meta[0]['flip']
         if flip:
             flip_direction = img_meta[0]['flip_direction']
             assert flip_direction in ['horizontal', 'vertical']
             if flip_direction == 'horizontal':
-                output = output.flip(dims=(3, ))
+                output = output.flip(dims=(3,))
             elif flip_direction == 'vertical':
-                output = output.flip(dims=(2, ))
+                output = output.flip(dims=(2,))
 
         return output
 
     def simple_test(self, img, img_meta, rescale=True):
         """Simple test with single image."""
         seg_logit = self.inference(img, img_meta, rescale)
-        seg_pred = seg_logit.argmax(dim=1)
+        if self.test_cfg.get("logits", False) and self.test_cfg.get("multi_label", False):
+            seg_pred = seg_logit.permute(0, 2, 3, 1)  # .argmax(dim=1)
+        elif self.test_cfg.get("logits", False):
+            seg_pred = seg_logit
+        elif self.test_cfg.get("binary_thres", None) is not None:
+            seg_pred = seg_logit[:, 1] > self.test_cfg.get("binary_thres")
+            seg_pred = seg_pred.long()
+        elif self.test_cfg.get("multi_label", False):
+            thres = self.test_cfg.get("multi_label_thres", 0.5)
+            seg_pred = (seg_logit > thres).permute(0, 2, 3, 1)
+            seg_pred = seg_pred.long()
+        else:
+            seg_pred = seg_logit.argmax(dim=1)
         if torch.onnx.is_in_onnx_export():
             # our inference backend only support 4D output
             seg_pred = seg_pred.unsqueeze(0)
@@ -266,7 +277,6 @@ class EncoderDecoder(BaseSegmentor):
 
     def aug_test(self, imgs, img_metas, rescale=True):
         """Test with augmentations.
-
         Only rescale=True is supported.
         """
         # aug_test rescale all imgs back to ori_shape for now
@@ -277,7 +287,19 @@ class EncoderDecoder(BaseSegmentor):
             cur_seg_logit = self.inference(imgs[i], img_metas[i], rescale)
             seg_logit += cur_seg_logit
         seg_logit /= len(imgs)
-        seg_pred = seg_logit.argmax(dim=1)
+        if self.test_cfg.get("logits", False) and self.test_cfg.get("multi_label", False):
+            seg_pred = seg_logit.permute(0, 2, 3, 1)  # .argmax(dim=1)
+        elif self.test_cfg.get("logits", False):
+            seg_pred = seg_logit
+        elif self.test_cfg.get("binary_thres", None) is not None:
+            seg_pred = seg_logit[:, 1] > self.test_cfg.get("binary_thres")
+            seg_pred = seg_pred.long()
+        elif self.test_cfg.get("multi_label", False):
+            thres = self.test_cfg.get("multi_label_thres", 0.5)
+            seg_pred = (seg_logit > thres).permute(0, 2, 3, 1)
+            seg_pred = seg_pred.long()
+        else:
+            seg_pred = seg_logit.argmax(dim=1)
         seg_pred = seg_pred.cpu().numpy()
         # unravel batch dim
         seg_pred = list(seg_pred)
