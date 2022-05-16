@@ -1,3 +1,5 @@
+import pdb
+
 from .builder import DATASETS
 from .custom import CustomDataset
 from .pipelines import Compose
@@ -212,9 +214,10 @@ class UWMGITDataset(CustomDataset):
             if self.multi_label:
                 ious = []
                 for i in range(len(self.CLASSES)):
-                    iou = intersect_and_union(pred[..., i], seg_map[..., i], 2,
-                                              self.ignore_index, self.label_map,
-                                              self.reduce_zero_label)
+                    iou = intersect_and_union(
+                        pred[..., i], seg_map[..., i], 2,
+                        self.ignore_index, self.label_map,
+                        self.reduce_zero_label)
                     ious.append(iou)
                 ious = tuple([torch.stack([_[i] for _ in ious], 0)[:, 1] for i in range(len(ious[0]))])
                 pre_eval_results.append(ious)
@@ -225,25 +228,6 @@ class UWMGITDataset(CustomDataset):
                                         self.reduce_zero_label))
 
         return pre_eval_results
-
-    def get_palette_for_custom_classes(self, class_names, palette=None):
-
-        if self.label_map is not None:
-            # return subset of palette
-            palette = []
-            for old_id, new_id in sorted(
-                    self.label_map.items(), key=lambda x: x[1]):
-                if new_id != -1:
-                    palette.append(self.PALETTE[old_id])
-            palette = type(self.PALETTE)(palette)
-
-        elif palette is None:
-            if self.PALETTE is None:
-                palette = np.random.randint(0, 255, size=(len(class_names), 3))
-            else:
-                palette = self.PALETTE
-
-        return palette
 
     def evaluate(self,
                  results,
