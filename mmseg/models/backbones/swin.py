@@ -1,4 +1,3 @@
-# Copyright (c) OpenMMLab. All rights reserved.
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
@@ -7,12 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as cp
-from mmcv.cnn import build_norm_layer
+from mmcv.cnn import build_norm_layer, constant_init, trunc_normal_init
 from mmcv.cnn.bricks.transformer import FFN, build_dropout
-from mmcv.cnn.utils.weight_init import (constant_init, trunc_normal_,
-                                        trunc_normal_init)
-from mmcv.runner import (BaseModule, CheckpointLoader, ModuleList,
-                         load_state_dict)
+from mmcv.runner import BaseModule, ModuleList, _load_checkpoint
 from mmcv.utils import to_2tuple
 
 from ...utils import get_root_logger
@@ -23,7 +19,6 @@ from ..utils.embed import PatchEmbed, PatchMerging
 class WindowMSA(BaseModule):
     """Window based multi-head self-attention (W-MSA) module with relative
     position bias.
-
     Args:
         embed_dims (int): Number of input channels.
         num_heads (int): Number of attention heads.
@@ -48,13 +43,12 @@ class WindowMSA(BaseModule):
                  attn_drop_rate=0.,
                  proj_drop_rate=0.,
                  init_cfg=None):
-
         super().__init__(init_cfg=init_cfg)
         self.embed_dims = embed_dims
         self.window_size = window_size  # Wh, Ww
         self.num_heads = num_heads
         head_embed_dims = embed_dims // num_heads
-        self.scale = qk_scale or head_embed_dims**-0.5
+        self.scale = qk_scale or head_embed_dims ** -0.5
 
         # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
@@ -76,12 +70,11 @@ class WindowMSA(BaseModule):
         self.softmax = nn.Softmax(dim=-1)
 
     def init_weights(self):
-        trunc_normal_(self.relative_position_bias_table, std=0.02)
+        trunc_normal_init(self.relative_position_bias_table, std=0.02)
 
     def forward(self, x, mask=None):
         """
         Args:
-
             x (tensor): input features with shape of (num_windows*B, N, C)
             mask (tensor | None, Optional): mask with shape of (num_windows,
                 Wh*Ww, Wh*Ww), value should be between (-inf, 0].
@@ -97,9 +90,9 @@ class WindowMSA(BaseModule):
 
         relative_position_bias = self.relative_position_bias_table[
             self.relative_position_index.view(-1)].view(
-                self.window_size[0] * self.window_size[1],
-                self.window_size[0] * self.window_size[1],
-                -1)  # Wh*Ww,Wh*Ww,nH
+            self.window_size[0] * self.window_size[1],
+            self.window_size[0] * self.window_size[1],
+            -1)  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(
             2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
         attn = attn + relative_position_bias.unsqueeze(0)
@@ -127,7 +120,6 @@ class WindowMSA(BaseModule):
 
 class ShiftWindowMSA(BaseModule):
     """Shifted Window Multihead Self-Attention Module.
-
     Args:
         embed_dims (int): Number of input channels.
         num_heads (int): Number of attention heads.
@@ -217,7 +209,7 @@ class ShiftWindowMSA(BaseModule):
             attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
             attn_mask = attn_mask.masked_fill(attn_mask != 0,
                                               float(-100.0)).masked_fill(
-                                                  attn_mask == 0, float(0.0))
+                attn_mask == 0, float(0.0))
         else:
             shifted_query = query
             attn_mask = None
@@ -225,7 +217,7 @@ class ShiftWindowMSA(BaseModule):
         # nW*B, window_size, window_size, C
         query_windows = self.window_partition(shifted_query)
         # nW*B, window_size*window_size, C
-        query_windows = query_windows.view(-1, self.window_size**2, C)
+        query_windows = query_windows.view(-1, self.window_size ** 2, C)
 
         # W-MSA/SW-MSA (nW*B, window_size*window_size, C)
         attn_windows = self.w_msa(query_windows, mask=attn_mask)
@@ -379,7 +371,6 @@ class SwinBlock(BaseModule):
 
 class SwinBlockSequence(BaseModule):
     """Implements one stage in Swin Transformer.
-
     Args:
         embed_dims (int): The feature dimension.
         num_heads (int): Parallel attention heads.
@@ -465,12 +456,10 @@ class SwinBlockSequence(BaseModule):
 @BACKBONES.register_module()
 class SwinTransformer(BaseModule):
     """Swin Transformer backbone.
-
     This backbone is the implementation of `Swin Transformer:
     Hierarchical Vision Transformer using Shifted
     Windows <https://arxiv.org/abs/2103.14030>`_.
     Inspiration from https://github.com/microsoft/Swin-Transformer.
-
     Args:
         pretrain_img_size (int | tuple[int]): The size of input image when
             pretrain. Defaults: 224.
@@ -479,7 +468,7 @@ class SwinTransformer(BaseModule):
         embed_dims (int): The feature dimension. Default: 96.
         patch_size (int | tuple[int]): Patch size. Default: 4.
         window_size (int): Window size. Default: 7.
-        mlp_ratio (int | float): Ratio of mlp hidden dim to embedding dim.
+        mlp_ratio (int): Ratio of mlp hidden dim to embedding dim.
             Default: 4.
         depths (tuple[int]): Depths of each Swin Transformer stage.
             Default: (2, 2, 6, 2).
@@ -540,6 +529,7 @@ class SwinTransformer(BaseModule):
                  frozen_stages=-1,
                  init_cfg=None):
         self.frozen_stages = frozen_stages
+        self.in_channels = in_channels
 
         if isinstance(pretrain_img_size, int):
             pretrain_img_size = to_2tuple(pretrain_img_size)
@@ -610,7 +600,7 @@ class SwinTransformer(BaseModule):
             stage = SwinBlockSequence(
                 embed_dims=in_channels,
                 num_heads=num_heads[i],
-                feedforward_channels=int(mlp_ratio * in_channels),
+                feedforward_channels=mlp_ratio * in_channels,
                 depth=depths[i],
                 window_size=window_size,
                 qkv_bias=qkv_bias,
@@ -627,7 +617,7 @@ class SwinTransformer(BaseModule):
             if downsample:
                 in_channels = downsample.out_channels
 
-        self.num_features = [int(embed_dims * 2**i) for i in range(num_layers)]
+        self.num_features = [int(embed_dims * 2 ** i) for i in range(num_layers)]
         # Add a norm layer for each output
         for i in out_indices:
             layer = build_norm_layer(norm_cfg, self.num_features[i])[1]
@@ -651,7 +641,7 @@ class SwinTransformer(BaseModule):
         for i in range(1, self.frozen_stages + 1):
 
             if (i - 1) in self.out_indices:
-                norm_layer = getattr(self, f'norm{i-1}')
+                norm_layer = getattr(self, f'norm{i - 1}')
                 norm_layer.eval()
                 for param in norm_layer.parameters():
                     param.requires_grad = False
@@ -668,18 +658,21 @@ class SwinTransformer(BaseModule):
                         f'{self.__class__.__name__}, '
                         f'training start from scratch')
             if self.use_abs_pos_embed:
-                trunc_normal_(self.absolute_pos_embed, std=0.02)
+                trunc_normal_init(self.absolute_pos_embed, std=0.02)
             for m in self.modules():
                 if isinstance(m, nn.Linear):
-                    trunc_normal_init(m, std=.02, bias=0.)
+                    trunc_normal_init(m.weight, std=.02)
+                    if m.bias is not None:
+                        constant_init(m.bias, 0)
                 elif isinstance(m, nn.LayerNorm):
-                    constant_init(m, val=1.0, bias=0.)
+                    constant_init(m.bias, 0)
+                    constant_init(m.weight, 1.0)
         else:
             assert 'checkpoint' in self.init_cfg, f'Only support ' \
                                                   f'specify `Pretrained` in ' \
                                                   f'`init_cfg` in ' \
                                                   f'{self.__class__.__name__} '
-            ckpt = CheckpointLoader.load_checkpoint(
+            ckpt = _load_checkpoint(
                 self.init_cfg['checkpoint'], logger=logger, map_location='cpu')
             if 'state_dict' in ckpt:
                 _state_dict = ckpt['state_dict']
@@ -723,8 +716,8 @@ class SwinTransformer(BaseModule):
                 if nH1 != nH2:
                     logger.warning(f'Error in loading {table_key}, pass')
                 elif L1 != L2:
-                    S1 = int(L1**0.5)
-                    S2 = int(L2**0.5)
+                    S1 = int(L1 ** 0.5)
+                    S2 = int(L2 ** 0.5)
                     table_pretrained_resized = F.interpolate(
                         table_pretrained.permute(1, 0).reshape(1, nH1, S1, S1),
                         size=(S2, S2),
@@ -733,7 +726,16 @@ class SwinTransformer(BaseModule):
                         nH2, L2).permute(1, 0).contiguous()
 
             # load state_dict
-            load_state_dict(self, state_dict, strict=False, logger=logger)
+            if self.in_channels != 3:
+                cur_state_dict = self.state_dict()
+                for k in state_dict.keys():
+                    if k not in cur_state_dict:
+                        continue
+                    if len(state_dict[k].shape) > 1 and state_dict[k].shape[1] == 3 and cur_state_dict[k].shape[
+                        1] == self.in_channels:
+                        state_dict[k] = torch.cat(
+                            [state_dict[k], *[state_dict[k][:, 0:1] for _ in range(self.in_channels - 3)]], 1)
+            self.load_state_dict(state_dict, False)
 
     def forward(self, x):
         x, hw_shape = self.patch_embed(x)
